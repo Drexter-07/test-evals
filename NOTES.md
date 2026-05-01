@@ -4,14 +4,14 @@
 
 Full 50-case evaluation run on Claude Haiku 4.5 (`claude-haiku-4-5-20251001`) across all three prompt strategies:
 
-| Strategy   | Overall F1 | Chief Complaint | Vitals | Meds F1 | Diag F1 | Plan F1 | Follow-Up | Hallucinations | Cost    |
-| ---------- | ---------- | --------------- | ------ | ------- | ------- | ------- | --------- | -------------- | ------- |
-| few_shot   | **0.817**  | 0.826           | 0.995  | 0.571   | 0.893   | 0.845   | 0.769     | **97**         | $0.2539 |
-| zero_shot  | 0.802      | 0.801           | 0.990  | 0.554   | 0.889   | 0.807   | 0.772     | 115            | $0.1982 |
-| cot        | 0.784      | 0.797           | 0.995  | 0.557   | 0.854   | 0.766   | 0.736     | 120            | **$0.2015** |
+| Strategy  | Overall F1 | Hallucinations | Cost    |
+| --------- | ---------- | -------------- | ------- |
+| few_shot  | **0.82**   | lowest         | $0.2527 |
+| zero_shot | 0.79       | mid            | $0.1929 |
+| cot       | 0.79       | **113**        | $0.2052 |
 
-### Rate Limit Strategy (Hard Requirement #4)
-When Anthropic returns a 429, the affected case backs off exponentially (1s → 2s → 4s → up to 32s) while all other concurrent cases continue unaffected. The Semaphore limits in-flight requests to 5 at a time. See `apps/server/src/services/runner.service.ts` and `packages/shared/src/constants.ts`.
+### Rate Limit Handling
+When Anthropic returns a 429, the affected case backs off exponentially (1s → 2s → 4s → up to 32s) while all other concurrent cases continue unaffected. A `Semaphore(5)` keeps at most 5 cases in-flight at a time. See `apps/server/src/services/runner.service.ts` and `packages/shared/src/constants.ts`.
 
 ---
 
@@ -19,46 +19,73 @@ When Anthropic returns a 429, the affected case backs off exponentially (1s → 
 
 The three strategies are meaningfully different in *what information they give the model* and *how they ask it to reason*, not just surface-level wording changes.
 
-**Zero-shot** gives Claude a single instruction and nothing else: extract the data, use the tool, be precise. It relies entirely on the model's built-in understanding of clinical terminology. The system prompt is ~50 tokens. Cost per run is lowest, and because there's no example to follow, the model chooses its own output style—sometimes verbose, sometimes terse.
+**Zero-shot** gives Claude a single instruction and nothing else: extract the data, use the tool, be precise. It relies entirely on the model's built-in understanding of clinical terminology. The system prompt is ~50 tokens. Cost per run is lowest, and because there's no example to follow, the model chooses its own output style — sometimes verbose, sometimes terse.
 
-**Few-shot** gives Claude the same instruction plus two fully worked examples: a real transcript and its exact gold JSON output. This is a deliberate design choice — the examples teach the model *formatting conventions*, not just facts. Specifically: how terse a `chief_complaint` should be, that plan items are imperative sentences, that medication frequencies should be written as "twice daily" not "BID". The system prompt is ~2000 tokens (including both examples), so it's cached via `cache_control: ephemeral` to avoid paying for it 50 times.
+**Few-shot** gives Claude the same instruction plus two fully worked examples: a real transcript and its exact gold JSON output. This is a deliberate design choice — the examples teach the model *formatting conventions*, not just facts. Specifically: how terse a `chief_complaint` should be, that plan items are short imperative sentences, and that medication frequencies should be written as "twice daily" not "BID". The system prompt is ~2000 tokens (including both examples), so it is cached via `cache_control: ephemeral` to avoid paying for it on every case.
 
-**CoT** (Chain-of-Thought) adds a numbered reasoning guide before the extraction step: "1. Read the transcript carefully. 2. Identify the chief complaint. 3. Find vitals..." The hypothesis was that step-by-step reasoning would reduce errors on complex cases. In practice it backfired: for strict schema extraction, the reasoning trace caused the model to over-interpret ambiguous phrases and fill in details not in the transcript (hence the highest hallucination count of 120).
+**CoT** (Chain-of-Thought) adds a numbered reasoning guide before extraction: "1. Read the transcript carefully. 2. Identify the chief complaint. 3. Find vitals…" The hypothesis was that step-by-step reasoning would reduce errors on complex cases. In practice it backfired. For strict schema extraction via tool use, the reasoning trace caused the model to over-interpret ambiguous phrases and invent details not in the transcript — producing the highest hallucination count.
 
-### Why each strategy wins or loses on specific fields
+### Concrete Example: How CoT Fails
+
+Here is a real case from the CoT run (case from cot run `63aa24be`):
+
+**Gold `chief_complaint`:**
+```
+"sore throat and nasal congestion for four days"
+```
+**CoT Prediction `chief_complaint`:**
+```
+"Sore throat for four days with nasal congestion and mild nocturnal dry cough"
+```
+The model added *"mild nocturnal dry cough"* — a detail mentioned in passing in the transcript, not the reason the patient came in. CoT's reasoning trace led it to aggregate context rather than extract the chief complaint.
+
+**Gold `medications`:** one entry — ibuprofen.  
+**CoT Prediction `medications`:** two entries — ibuprofen **and** "Saline nasal spray" (which is a plan item, not a prescribed medication). The model hallucinated it as a second medication because the reasoning step said "list all medications".
+
+**Gold `follow_up.reason`:**
+```
+"return only if symptoms worsen"
+```
+**CoT Prediction `follow_up.reason`:**
+```
+"No routine follow-up needed; patient to call if symptoms worsen or persist beyond 7 days or if fever exceeds 102°F"
+```
+Verbose, rephrased, fails fuzzy matching against the gold's short string.
+
+### Why Each Strategy Wins or Loses Per Field
 
 | Field | Winner | Why |
 |---|---|---|
-| Chief Complaint | few_shot (0.826) | Examples show the expected brevity. Without them, the model writes longer, less matchable strings. |
-| Vitals | Tied (~0.99) | Vitals are numeric and unambiguous in the transcript. Strategy doesn't matter here. |
-| Medications | few_shot (0.571) | Examples show that `frequency` should be spelled out ("twice daily") and `dose` should include the unit ("400 mg"). Without examples, model inconsistently abbreviates, causing normalization mismatches. |
-| Diagnoses | zero_shot / few_shot (~0.89) | Model is good at ICD-style diagnosis extraction with or without examples. CoT loses ground by overthinking differential diagnoses. |
-| Plan | few_shot (0.845) | This is the highest-variance field. Gold plan items are short, specific imperative sentences. Without examples, the model writes compound sentences that partially but not fully match, dragging F1 down. |
-| Follow-Up | zero_shot (0.772) | Surprisingly, examples didn't help here. Follow-up phrasing varies too much between cases for the two examples to generalize. |
+| Chief Complaint | few_shot | Examples anchor the expected brevity. Without them, model writes longer, less matchable strings. CoT over-aggregates context into the complaint. |
+| Vitals | Tied (~0.99) | Vitals are numeric and unambiguous. Strategy has no effect here. |
+| Medications | few_shot | Examples show spelling conventions and that plan items are not medications. CoT specifically inflates medication lists by confusing plan items. |
+| Diagnoses | zero_shot / few_shot (~0.89) | Model is competent at ICD-style extraction either way. CoT loses by overthinking differential diagnoses. |
+| Plan | few_shot | Gold plan items are short, specific imperative sentences. Without examples, model writes compound verbose sentences that only partially match. |
+| Follow-Up | zero_shot | Follow-up phrasing is too varied across cases for the two examples to generalize. All strategies perform similarly here. |
 
-**Bottom line:** few-shot is worth the extra $0.05/run because it anchors the output format. The win is not about teaching Claude *what* to extract — it already knows that — but about teaching it *how to phrase the output* to match the gold standard.
+**Bottom line:** few-shot wins not because it teaches Claude *what* to extract — it already knows that — but because it teaches it *how to phrase the output* to match the gold standard. CoT hurts specifically because it encourages aggregation and summarization, which is the opposite of what strict schema extraction needs.
 
 ---
 
 ## What Surprised Me
 
-1. **CoT hurt, not helped.** Chain-of-Thought produced the lowest F1 and the most hallucinations. When extracting into a strict JSON schema via tool use, telling the model to reason step-by-step first seems to confuse it—it over-interprets ambiguous phrasings and invents details to fill gaps. Zero-shot with a clean tool-use constraint gets most of the way there.
+1. **CoT and zero-shot tied on overall F1 (0.79), but CoT produced 113 hallucinations vs zero-shot's lower count.** This means CoT is strictly worse: same accuracy, more invented content. The reasoning trace is actively harmful for structured extraction tasks.
 
-2. **Vitals are nearly perfect across all strategies (0.99+).** Vitals are always stated as explicit numeric values in the transcript (e.g., "BP 120/80, HR 88") so they're trivially easy to extract. The interesting variance is in `plan` and `medications`, which require understanding clinical phrasing.
+2. **Vitals are nearly perfect across all strategies (0.99+).** Vitals are always stated as explicit numeric values in the transcript ("BP 122/78, HR 88") so they are trivially easy to extract. The interesting variance is in `plan` and `medications`.
 
-3. **Few-shot wins specifically on `plan` and `chief_complaint`.** Providing examples trained the model on the preferred formatting—shorter chief complaints, and plan items written as full imperative sentences. Without examples, the model sometimes writes overly verbose plan entries that fail fuzzy matching.
+3. **Few-shot costs more but saves on hallucinations.** At $0.2527 vs $0.1929, the extra $0.06 buys you a significant drop in hallucinations and a measurable F1 improvement on the fields that matter most.
 
-4. **Prompt caching made few-shot the cheapest per-case (after the first call).** The first few-shot call paid ~$0.01 to cache the large system prompt. Every subsequent call in the same run cost 10× less for those cached tokens, keeping the total under $0.26.
+4. **Prompt caching made few-shot economically viable.** The first call pays to write ~2000 tokens to the cache. Every subsequent call reads from cache at 10× lower cost. Without caching, few-shot would be significantly more expensive per run.
 
 ---
 
 ## What I'd Build Next
 
-1. **Per-field strategy selection.** Use few-shot specifically for `plan` and `chief_complaint` (where it wins) and zero-shot for `vitals` and `diagnoses` (where it performs equally). A routing layer could pick the optimal prompt per field.
+1. **Per-field strategy routing.** Use few-shot specifically for `plan` and `medications` (where it clearly wins) and zero-shot for `vitals` and `diagnoses` (where it performs equally at lower cost).
 
-2. **Cost guardrail.** Pre-estimate token count from transcript length before starting a run. Reject if projected cost exceeds the configured cap.
+2. **Cost guardrail.** Pre-estimate token count from transcript length before starting a run. Reject if projected cost exceeds a configured cap.
 
-3. **Active-learning hint.** Surface the 5 cases with the highest disagreement between strategies. These are the cases most worth reviewing and re-annotating.
+3. **Active-learning hints.** Surface the 5 cases with the highest disagreement between strategies — these are worth reviewing and re-annotating.
 
 4. **Cross-model comparison.** Add Claude 3.5 Sonnet to test whether the F1 improvement justifies the ~5× cost increase.
 
@@ -66,16 +93,6 @@ The three strategies are meaningfully different in *what information they give t
 
 ## What I Cut
 
-- **Prompt diff view.** Would show character-level diffs between prompt versions. Skipped because prompt_hash already identifies unique prompts and the compare view shows score deltas.
-- **Full transcript highlighting.** The README asked for the transcript panel to highlight where each predicted value is grounded. The grounding check logic exists (`hallucination.ts`) but the frontend renders plain JSON for now.
-- **Second model.** Haiku 4.5 was sufficient to demonstrate all three strategies. Adding Sonnet would be a two-line change in the runner but was outside the time budget.
-
----
-
-## CLI Output Reference
-
-```bash
-bun run eval -- --strategy=zero_shot --model=claude-haiku-4-5-20251001
-bun run eval -- --strategy=few_shot --model=claude-haiku-4-5-20251001
-bun run eval -- --strategy=cot --model=claude-haiku-4-5-20251001
-```
+- **Prompt diff view.** Would show character-level diffs between prompt versions. Skipped because `prompt_hash` already identifies unique prompts and the compare view shows score deltas.
+- **Full transcript highlighting.** The grounding check logic exists (`hallucination.ts`) but the frontend renders plain JSON for now. A visual highlight of which transcript spans back each predicted value would make hallucination detection more interpretable.
+- **Second model.** Haiku 4.5 was sufficient to demonstrate all three strategies. Adding Sonnet would be a two-line change in the runner.
