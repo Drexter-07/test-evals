@@ -6,22 +6,26 @@
     "build": "tsdown",
     "check-types": "tsc -b",
     "compile": "bun build --compile --minify --sourcemap --bytecode ./src/index.ts --outfile server",
-    "dev": "bun run --hot src/index.ts",
-    "start": "bun run dist/index.mjs"
+    "dev": "C:/Users/sahil/.bun/bin/bun.exe run --hot src/index.ts",
+    "start": "C:/Users/sahil/.bun/bin/bun.exe run dist/index.mjs"
   },
   "dependencies": {
     "@test-evals/auth": "workspace:*",
     "@test-evals/db": "workspace:*",
     "@test-evals/env": "workspace:*",
-    "better-auth": "catalog:",
-    "dotenv": "catalog:",
+    "@test-evals/llm": "workspace:*",
+    "@test-evals/shared": "workspace:*",
+    "better-auth": "1.6.9",
+    "dotenv": "^17.2.2",
+    "drizzle-orm": "^0.45.1",
+    "fuzzball": "^2.1.2",
     "hono": "^4.8.2",
-    "zod": "catalog:"
+    "zod": "^4.1.13"
   },
   "devDependencies": {
     "@test-evals/config": "workspace:*",
-    "@types/bun": "catalog:",
+    "@types/bun": "^1.3.4",
     "tsdown": "^0.21.9",
-    "typescript": "catalog:"
+    "typescript": "^6"
   }
 }

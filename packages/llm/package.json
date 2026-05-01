@@ -1,5 +1,7 @@
 {
-  "name": "@test-evals/db",
+  "name": "@test-evals/llm",
+  "version": "0.0.0",
+  "private": true,
   "type": "module",
   "exports": {
     ".": {
@@ -9,23 +11,17 @@
       "default": "./src/*.ts"
     }
   },
-  "scripts": {
-    "db:push": "drizzle-kit push",
-    "db:generate": "drizzle-kit generate",
-    "db:studio": "drizzle-kit studio",
-    "db:migrate": "drizzle-kit migrate"
-  },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
     "@test-evals/env": "workspace:*",
+    "@test-evals/shared": "workspace:*",
+    "ajv": "^8.17.0",
+    "ajv-formats": "^3.0.1",
     "dotenv": "^17.2.2",
-    "drizzle-orm": "^0.45.1",
-    "pg": "^8.17.1",
     "zod": "^4.1.13"
   },
   "devDependencies": {
     "@test-evals/config": "workspace:*",
-    "@types/pg": "^8.16.0",
-    "drizzle-kit": "^0.31.8",
     "typescript": "^6"
   }
 }

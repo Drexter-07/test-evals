@@ -11,14 +11,16 @@
   },
   "scripts": {},
   "dependencies": {
+    "@better-auth/drizzle-adapter": "1.6.9",
     "@test-evals/db": "workspace:*",
     "@test-evals/env": "workspace:*",
-    "better-auth": "catalog:",
-    "dotenv": "catalog:",
-    "zod": "catalog:"
+    "@better-auth/core": "1.6.9",
+    "better-auth": "1.6.9",
+    "dotenv": "^17.2.2",
+    "zod": "^4.1.13"
   },
   "devDependencies": {
     "@test-evals/config": "workspace:*",
-    "typescript": "catalog:"
+    "typescript": "^6"
   }
 }
